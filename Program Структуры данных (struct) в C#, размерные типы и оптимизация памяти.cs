@@ -1,0 +1,256 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace Program14
+{
+    namespace DroneTelemetryCore
+    {
+        // =========================================================
+        // Шаг 1. Неизменяемая структура GeoCoordinate (readonly struct)
+        // =========================================================
+        public readonly struct GeoCoordinate
+        {
+            public double Latitude { get; }
+            public double Longitude { get; }
+
+            // Валидация без Math.Clamp — работает на любых версиях .NET
+            public GeoCoordinate(double latitude, double longitude)
+            {
+                // Широта: [-90, 90]
+                if (latitude < -90.0)
+                    Latitude = -90.0;
+                else if (latitude > 90.0)
+                    Latitude = 90.0;
+                else
+                    Latitude = latitude;
+
+                // Долгота: [-180, 180]
+                if (longitude < -180.0)
+                    Longitude = -180.0;
+                else if (longitude > 180.0)
+                    Longitude = 180.0;
+                else
+                    Longitude = longitude;
+            }
+
+            public double DistanceTo(GeoCoordinate other)
+            {
+                return Math.Sqrt(
+                    Math.Pow(Latitude - other.Latitude, 2) +
+                    Math.Pow(Longitude - other.Longitude, 2)) * 111.0;
+            }
+
+            public override string ToString()
+            {
+                return $"({Latitude:F4}°, {Longitude:F4}°)";
+            }
+        }
+
+        // =========================================================
+        // Шаг 2. Изменяемая структура Vector3D
+        // =========================================================
+        public struct Vector3D
+        {
+            public double X;
+            public double Y;
+            public double Z;
+
+            public Vector3D(double x, double y, double z)
+            {
+                X = x;
+                Y = y;
+                Z = z;
+            }
+
+            public double Length => Math.Sqrt(X * X + Y * Y + Z * Z);
+
+            public void Add(Vector3D other)
+            {
+                X += other.X;
+                Y += other.Y;
+                Z += other.Z;
+            }
+
+            public void Scale(double factor)
+            {
+                X *= factor;
+                Y *= factor;
+                Z *= factor;
+            }
+
+            public override string ToString()
+            {
+                return $"[X: {X:F1}, Y: {Y:F1}, Z: {Z:F1}]";
+            }
+        }
+
+        // =========================================================
+        // Шаг 3. Составная структура DroneState
+        // =========================================================
+        public struct DroneState
+        {
+            public int DroneId { get; }               // неизменяемый номер борта
+            public GeoCoordinate Position { get; set; }
+            public Vector3D Velocity { get; set; }
+            public int BatteryPercent { get; set; }
+
+            public bool IsGrounded => Position.Latitude == 0 && Position.Longitude == 0;
+
+            public DroneState(int id, GeoCoordinate position, Vector3D velocity, int batteryPercent)
+            {
+                DroneId = id;
+                Position = position;
+                Velocity = velocity;
+
+                // Валидация заряда без Math.Clamp
+                if (batteryPercent < 0)
+                    BatteryPercent = 0;
+                else if (batteryPercent > 100)
+                    BatteryPercent = 100;
+                else
+                    BatteryPercent = batteryPercent;
+            }
+
+            public string Describe()
+            {
+                return $"Дрон №{DroneId}: позиция {Position}, скорость {Velocity}, заряд {BatteryPercent}%, " +
+                       $"{(IsGrounded ? "на земле" : "в воздухе")}";
+            }
+        }
+
+        // =========================================================
+        // Шаг 4. Расчетный класс TelemetryProcessor (static)
+        // =========================================================
+        public static class TelemetryProcessor
+        {
+            // Некорректный вариант: передача ПО ЗНАЧЕНИЮ
+            public static void ApplyDrift(DroneState drone, Vector3D wind)
+            {
+                drone.Velocity.Add(wind);
+            }
+
+            // Корректный вариант: передача ПО ССЫЛКЕ (ref)
+            public static void ApplyDriftCorrect(ref DroneState drone, Vector3D wind)
+            {
+                Vector3D v = drone.Velocity;
+                v.Add(wind);
+                drone.Velocity = v;
+            }
+
+            // Шаг симуляции: расход батареи и смещение координат
+            public static void SimulateFlightStep(ref DroneState drone, double timeSeconds)
+            {
+                int batteryLoss = (int)(timeSeconds / 5.0);
+                int newPercent = drone.BatteryPercent - batteryLoss;
+
+                if (newPercent < 0)
+                    drone.BatteryPercent = 0;
+                else
+                    drone.BatteryPercent = newPercent;
+
+                double newLatitude = drone.Position.Latitude + (drone.Velocity.Y * timeSeconds) / 111000.0;
+                double newLongitude = drone.Position.Longitude + (drone.Velocity.X * timeSeconds) / 111000.0;
+
+                drone.Position = new GeoCoordinate(newLatitude, newLongitude);
+
+                Console.WriteLine($"[Симуляция] Дрон №{drone.DroneId}: шаг {timeSeconds} с. " +
+                                  $"Позиция: {drone.Position}, заряд: {drone.BatteryPercent}%.");
+            }
+        }
+
+        // =========================================================
+        // Шаг 5. Program.cs — эксперименты
+        // =========================================================
+        class Program
+        {
+            static void Main()
+            {
+                Console.OutputEncoding = System.Text.Encoding.UTF8;
+                Console.WriteLine("=== ДИСПЕТЧЕР ПРОСТРАНСТВЕННОЙ НАВИГАЦИИ ДРОНОВ ===\n");
+
+                // ---------------------------------------------------------
+                // ЭКСПЕРИМЕНТ 1. Доказательство независимости копий
+                // ---------------------------------------------------------
+                Console.WriteLine("--- ЭКСПЕРИМЕНТ 1: копирование по значению ---");
+
+                Vector3D v1 = new Vector3D(10, 20, 30);
+                Vector3D v2 = v1;
+                v2.X = 999;
+
+                Console.WriteLine($"v1 = {v1}");
+                Console.WriteLine($"v2 = {v2}");
+                Console.WriteLine();
+
+                // ---------------------------------------------------------
+                // ЭКСПЕРИМЕНТ 2. Передача по значению vs ref
+                // ---------------------------------------------------------
+                Console.WriteLine("--- ЭКСПЕРИМЕНТ 2: передача по значению и через ref ---");
+
+                DroneState drone = new DroneState(
+                    101,
+                    new GeoCoordinate(55.7558, 37.6173),
+                    new Vector3D(15, 0, 5),
+                    100);
+
+                Console.WriteLine($"Исходная скорость дрона: {drone.Velocity}");
+
+                TelemetryProcessor.ApplyDrift(drone, new Vector3D(5, 5, 0));
+                Console.WriteLine($"После ApplyDrift (по значению):  {drone.Velocity} — НЕ изменилась!");
+
+                TelemetryProcessor.ApplyDriftCorrect(ref drone, new Vector3D(5, 5, 0));
+                Console.WriteLine($"После ApplyDriftCorrect (ref):   {drone.Velocity} — изменилась!");
+                Console.WriteLine();
+
+                // ---------------------------------------------------------
+                // ЭКСПЕРИМЕНТ 3. Массив структур
+                // ---------------------------------------------------------
+                Console.WriteLine("--- ЭКСПЕРИМЕНТ 3: массив структур (рой дронов) ---");
+
+                DroneState[] swarm = new DroneState[3];
+                swarm[0] = new DroneState(201, new GeoCoordinate(55.1000, 37.5000), new Vector3D(30, 10, 0), 95);
+                swarm[1] = new DroneState(202, new GeoCoordinate(55.2000, 37.6000), new Vector3D(-20, 40, 5), 88);
+                swarm[2] = new DroneState(203, new GeoCoordinate(55.3000, 37.7000), new Vector3D(50, -15, 2), 76);
+
+                for (int step = 1; step <= 3; step++)
+                {
+                    Console.WriteLine($"\n>>> Такт полета {step}");
+                    for (int i = 0; i < swarm.Length; i++)
+                    {
+                        TelemetryProcessor.SimulateFlightStep(ref swarm[i], 10.0);
+                    }
+                }
+
+                Console.WriteLine("\n>>> Итоговая телеметрия роя:");
+                foreach (var d in swarm)
+                {
+                    Console.WriteLine(d.Describe());
+                }
+                Console.WriteLine();
+
+                // ---------------------------------------------------------
+                // ЭКСПЕРИМЕНТ 4. Boxing / Unboxing
+                // ---------------------------------------------------------
+                Console.WriteLine("--- ЭКСПЕРИМЕНТ 4: упаковка и распаковка ---");
+
+                DroneState original = new DroneState(301, new GeoCoordinate(56.0, 38.0), new Vector3D(1, 2, 3), 80);
+                object boxedDrone = original;
+                Console.WriteLine($"Заряд ДО упаковки: {original.BatteryPercent}%");
+
+                DroneState unboxed = (DroneState)boxedDrone;
+                unboxed.BatteryPercent = 50;
+                boxedDrone = unboxed;
+
+                DroneState refreshed = (DroneState)boxedDrone;
+                Console.WriteLine($"Заряд после перезаписи в куче: {refreshed.BatteryPercent}%");
+                Console.WriteLine($"Заряд исходной переменной: {original.BatteryPercent}% — не изменилась!");
+                Console.WriteLine();
+
+                Console.WriteLine("Нажмите любую клавишу для завершения...");
+                Console.ReadKey();
+            }
+        }
+    }
+}
